@@ -1,0 +1,140 @@
+#!/bin/bash
+# Copyright 2023      Red Hat, Inc
+# Requires: curl, jq
+#
+# The file $XDG_CONFIG_HOME/jira-osp/config must exist and look like:
+# $ cat $XDG_CONFIG_HOME/jira-osp/config
+# token=<JIRA auth token>
+
+set -u
+
+usage () {
+    script=$(basename "$0")
+    echo "Usage:"
+    echo -e "\t$script [-n|--dry-run] PROJECT"
+    echo ""
+    echo "where PROJECT can be Ceph, Cinder, Glance, Manila, Swift"
+    echo ""
+    echo "A Jira token must be available in \$XDG_CONFIG_HOME/jira-osp/config:"
+    echo ""
+    echo -e "\t\$ cat \$XDG_CONFIG_HOME/jira-osp/config"
+    echo -e "\ttoken=secret-token"
+}
+
+dryrun=false
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -h|--help)
+        usage
+        exit 0
+        ;;
+        -n|--dry-run)
+        dryrun=true
+        shift
+        ;;
+        -*|--*)
+        echo "Unknown option $1"
+        usage
+        exit 1
+        ;;
+        *)
+        PROJECT=$1
+        shift
+        ;;
+    esac
+done
+
+XDG_CONFIG_HOME=${XDG_CONFIG_HOME:-$HOME/.config}
+
+# Jira configuration
+JIRAURL=https://issues.redhat.com/rest/api/2
+JIRAOSPCONFIG=$XDG_CONFIG_HOME/jira-osp/config
+if ! test -r "$JIRAOSPCONFIG"; then
+    echo "A Jira token must be available in \$XDG_CONFIG_HOME/jira-osp/config:"
+    echo ""
+    echo -e "\t\$ cat \$XDG_CONFIG_HOME/jira-osp/config"
+    echo -e "\ttoken=secret-token"
+    exit 1
+fi
+JIRATOKEN=$(awk 'BEGIN {FS="="} /^token=/ {print $2}' "$JIRAOSPCONFIG")
+if test -z "$JIRATOKEN"; then
+    echo "Could not find Jiratoken in $JIRAOSPCONFIG"
+    echo "$JIRAOSPCONFIG must contain the following line:"
+    echo -e "token=secret-token"
+    exit 1
+fi
+
+# For backwards-compatibility, Glance is the default project.
+PROJECT=${PROJECT:-Glance}
+WHITEBOARD="DFG:Storage Squad:$PROJECT"
+WORKSTREAM="Storage; $PROJECT"
+
+list_epics () {
+    # Return the keys of all the Epics for the whiteboard/workstream we are
+    # interested in that have not been closed.
+    local jql="project=OSP"
+    jql="$jql AND (Whiteboard ~ '$WHITEBOARD' OR Workstream = '$WORKSTREAM')"
+    jql="$jql AND issuetype='Epic'"
+    jql="$jql AND status!=Closed"
+    jql="$jql ORDER by key"
+    local d='{
+        "jql": "'${jql}'",
+        "maxResults": 1000,
+        "fields": ["key"]
+    }'
+    curl -s  \
+       -X POST \
+       -H "Authorization: Bearer $JIRATOKEN" \
+       -H "Content-Type: application/json" \
+        --data "$d" \
+        "$JIRAURL/search" | jq -r .issues[].key
+}
+
+list_stories() {
+    # Return the keys of the stories whose parent is $1, and that have no
+    # workstream set.
+    local epickey=$1
+    local jql="'Epic Link' = '$epickey'"
+    jql="$jql AND cf[12319275] is empty"  # cf[12319275] == "workstream" field
+    jql="$jql ORDER by key"
+    local d='{
+        "jql": "'${jql}'",
+        "fields": ["key"]
+    }'
+    curl -s  \
+        -X POST \
+        -H "Authorization: Bearer $JIRATOKEN" \
+        -H "Content-Type: application/json" \
+        --data "$d" \
+        "$JIRAURL/search" | jq -r .issues[].key
+}
+
+add_worsktream_to_story () {
+    # Edit the story whose key is $1 by setting its workstream to $WORKSTREAM.
+    local storykey=$1
+    local d;
+    d=$(printf '{
+        "fields" : {
+            "customfield_12319275": [{"value" : "%s"}]
+        }
+    }', "$WORKSTREAM")
+    curl -s \
+        -X PUT \
+        -H "Authorization: Bearer $JIRATOKEN" \
+        -H "Content-Type: application/json" \
+        --data "$d" \
+        "$JIRAURL/issue/$storykey/"
+}
+
+for epickey in $(list_epics); do
+    echo "[+] Epic $epickey"
+    for storykey in $(list_stories "$epickey"); do
+        echo "$storykey is missing a workstream"
+        if "$dryrun"; then
+            echo "Dry run: not actually adding a workstream to $storykey"
+        else
+            echo "Adding a workstream to $storykey"
+            add_worsktream_to_story "$storykey"
+        fi
+    done
+done
