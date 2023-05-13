@@ -1,0 +1,254 @@
+#!/bin/bash
+# Copyright 2023      Red Hat, Inc
+# Requires: curl, jq, column (from util-linux), fzf
+# Optional requirements: xdg-open (open on Darwin)
+set -u
+
+# We are going to be calling ourselves, so we need to know where we are.
+FZF_JIRA=$(readlink -f "${BASH_SOURCE[0]}")
+
+XDG_CONFIG_HOME=${XDG_CONFIG_HOME:-$HOME/.config}
+XDG_CACHE_HOME=${XDG_CACHE_HOME:-$HOME/.cache}
+CACHEDIR=$XDG_CACHE_HOME/jira-osp
+mkdir -p "$CACHEDIR"
+CACHE=$CACHEDIR/fzf-jira.json
+
+# Jira configuration
+JIRAURL=https://issues.redhat.com
+JIRAAPIURL=$JIRAURL/rest/api/2
+JIRAOSPCONFIG=$XDG_CONFIG_HOME/jira-osp/config
+if ! test -r "$JIRAOSPCONFIG"; then
+    echo "A Jira token must be available in \$XDG_CONFIG_HOME/jira-osp/config:"
+    echo ""
+    echo -e "\t\$ cat \$XDG_CONFIG_HOME/jira-osp/config"
+    echo -e "\ttoken=secret-token"
+    exit 1
+fi
+JIRATOKEN=$(awk 'BEGIN {FS="="} /^token=/ {print $2}' "$JIRAOSPCONFIG")
+if test -z "$JIRATOKEN"; then
+    echo "Could not find Jiratoken in $JIRAOSPCONFIG"
+    echo "$JIRAOSPCONFIG must contain the following line:"
+    echo -e "token=secret-token"
+    exit 1
+fi
+
+# Some common curl options we will always be passing to curl.
+CURL_OPTS=(-s
+       -H "Authorization: Bearer $JIRATOKEN"
+       -H "Content-Type: application/json"
+)
+
+# The custom fields used by our Jira instance.
+CF_PARENT=customfield_12311140
+CF_PLANNING=customfield_12319440
+CF_STORYPOINTS=customfield_12310243
+CF_TSHIRT=customfield_12316541
+CF_WHITEBOARD=customfield_12316843
+CF_WORKSTREAM=customfield_12319275
+
+# We pass these common arguments to most of our calls to jq, even when we do
+# not need access to all these custom fields.
+# We will not be able to write:
+#   .fields.$planning
+# So we will have to write:
+#   .fields[$planning]
+JQ_ARGS=(
+    --arg parent "$CF_PARENT"
+    --arg planning "$CF_PLANNING"
+    --arg storypoints "$CF_STORYPOINTS"
+    --arg tshirt "$CF_TSHIRT"
+    --arg whiteboard "$CF_WHITEBOARD"
+    --arg workstream "$CF_WORKSTREAM"
+)
+
+build_cache () {
+    PROJECT=$1
+    WHITEBOARD="DFG:Storage Squad:$PROJECT"
+    JQL="project in (OSP, RHOSPDOC)"
+    JQL="$JQL AND (Whiteboard ~ '$WHITEBOARD' OR Workstream='Storage; $PROJECT')"
+    JQL="$JQL AND issuetype in ('Epic', 'Story')"
+    JQL="$JQL ORDER by key DESC"
+    local data='{
+        "jql": "'${JQL}'",
+        "fields": [
+            "fixVersions",
+            "summary",
+            "key",
+            "labels",
+            "status",
+            "'$CF_PARENT'",
+            "'$CF_PLANNING'",
+            "'$CF_TSHIRT'",
+            "'$CF_STORYPOINTS'",
+            "'$CF_WHITEBOARD'",
+            "'$CF_WORKSTREAM'",
+            "issuetype"
+        ],
+        "maxResults": 1000
+    }'
+    curl "${CURL_OPTS[@]}" \
+       -X POST \
+        --data "$data" \
+        "$JIRAAPIURL/search" > "$CACHE"
+}
+
+list_epics () {
+    jq -r \
+        '.issues[]
+        | select(.fields.issuetype.name=="Epic")
+        | [.key,
+           .fields.status.name,
+           .fields.fixVersions[0].name // "----------",
+           .fields.summary]
+        | @tsv
+    ' "$CACHE" \
+    | column -s $'\t' -t
+}
+
+list_stories () {
+    jq "${JQ_ARGS[@]}" -r \
+        '.issues[]
+        | select(.fields.issuetype.name=="Story")
+        | [.key,
+           .fields.status.name,
+           .fields[$planning][0].value // "------",
+           .fields.summary]
+        | @tsv
+    ' "$CACHE" \
+    | column -s $'\t' -t
+}
+
+list_stories_for_epic () {
+    jq "${JQ_ARGS[@]}" -r --arg epickey "$1" \
+        '.issues[]
+        | select(.fields.issuetype.name=="Story" and
+                 .fields[$parent]==$epickey)
+        | [.key,
+           .fields.status.name,
+           .fields[$planning][0].value // "------",
+           .fields.summary]
+        | @tsv
+    ' "$CACHE" \
+    | column -s $'\t' -t
+}
+
+preview_epic () {
+    jq "${JQ_ARGS[@]}" -r --arg epickey "$1" \
+        '.issues[]
+        | select(.key == $epickey)
+        | .summary=.fields.summary
+        | .status=.fields.status.name
+        | .version=(.fields.fixVersions[0].name // "Not set")
+        | .whiteboard=(.fields[$whiteboard] // "---")
+        | ."tshirt size"=(.fields[$tshirt] // {value: "---"}).value
+        | .labels=((if .fields.labels | length > 0 then .fields.labels
+                    else ["---"]
+                    end) | join (", "))
+        | del(.self, .expand, .fields, .id)
+        | to_entries
+        | map("\(.key)|\(.value|tostring)")
+        | .[]' "$CACHE" \
+    | column -s '|' -t
+}
+
+preview_story () {
+    jq "${JQ_ARGS[@]}" --arg storykey "$1" -r '.issues[]
+        | select(.key==$storykey)
+        | .summary=.fields.summary
+        | .labels=((if .fields.labels | length > 0 then .fields.labels
+                    else ["---"]
+                    end) | join (", "))
+        | .planning=(.fields[$planning][0].value // "---")
+        | .whiteboard=(.fields[$whiteboard] // "---")
+        | .workstream=((.fields[$workstream] // [{value: "---"}])
+                        | map(.value)
+                        | join(", "))
+        | ."story points"=(.fields[$storypoints] // "---")
+        | del(.self, .expand, .fields, .id)
+        | to_entries
+        | map("\(.key)\t\(.value|tostring)")
+        | .[]' "$CACHE" \
+    | column -s $'\t' -t
+}
+
+fzf_epics () {
+    bash "$FZF_JIRA" list-epics \
+    | fzf \
+        --multi \
+        --header-lines 1 \
+        --preview "bash $FZF_JIRA preview-epic {1}" \
+        --preview-window bottom +s \
+        --bind "ctrl-o:execute-silent(bash $FZF_JIRA open-issues {+1})" \
+        --bind "alt-p:toggle-preview" \
+        --bind "alt-e:reload(bash $FZF_JIRA list-epics)" \
+        --bind "alt-e:+change-preview(bash $FZF_JIRA preview-epic {1})" \
+        --bind "alt-e:+rebind(alt-c)+rebind(alt-s)" \
+        --bind "alt-e:+clear-query" \
+        --bind "alt-e:+first" \
+        --bind "alt-c:reload(bash $FZF_JIRA list-stories-for-epic {1})" \
+        --bind "alt-c:+change-preview(bash $FZF_JIRA preview-story {1})" \
+        --bind "alt-c:+unbind(alt-c)" \
+        --bind "alt-c:+clear-query" \
+        --bind "alt-c:+first" \
+        --bind "alt-s:reload(bash $FZF_JIRA list-stories)" \
+        --bind "alt-s:+change-preview(bash $FZF_JIRA preview-story {1})" \
+        --bind "alt-s:+unbind(alt-s)+unbind(alt-c)" \
+        --bind "alt-s:+clear-query" \
+        --bind "alt-s:+first"
+}
+
+usage () {
+    script=$(basename "$0")
+    echo "Usage:"
+    echo -e "\t$script PROJECT"
+    echo ""
+    echo "where PROJECT can be Ceph, Cinder, Glance, Manila, Swift"
+}
+
+if [[ "$#" -gt "0" ]]; then
+    COMMONBINDINGS='ALT + toggle (p)review'
+    case "$1" in
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        list-epics)
+            echo "ALT + (s)tories | ALT + (c)hildren | $COMMONBINDINGS"
+            list_epics
+            ;;
+        list-stories)
+            echo "ALT + (e)pics | $COMMONBINDINGS"
+            list_stories
+            ;;
+        list-stories-for-epic)
+            echo "ALT + (e)pics | ALT + (s)tories | $COMMONBINDINGS"
+            list_stories_for_epic "$2"
+            ;;
+        open-issues)
+            shift
+            case "$(uname -s)" in
+                Darwin) openfn=open;;
+                *)      openfn=xdg-open;;
+            esac
+            while [[ "$#" -gt 0 ]]; do
+                "$openfn" "$JIRAURL/browse/$1" >/dev/null 2>&1
+                shift
+            done
+            ;;
+        preview-epic)
+            preview_epic "$2"
+            ;;
+        preview-story)
+            preview_story "$2"
+            ;;
+        [Cc]eph|[Cc]inder|[Gg]lance|[Mm]anila|[Ss]wift)
+            build_cache "$1"
+            fzf_epics
+            ;;
+        *)
+            echo "Wrong subcommand $1"
+            ;;
+    esac
+else
+    usage
+fi

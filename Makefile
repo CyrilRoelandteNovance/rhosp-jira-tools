@@ -1,5 +1,5 @@
 PREFIX ?= /usr/local
-scripts=bin/add-missing-workstream
+scripts=bin/add-missing-workstream bin/fzf-jira
 
 install: $(scripts)
 	install -d $(PREFIX)/bin/
