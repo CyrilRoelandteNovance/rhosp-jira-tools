@@ -84,6 +84,7 @@ A list of all shortcuts:
 | Alt+e    | List all epics                                              |
 | Alt+s    | List all stories                                            |
 | Alt+p    | Toggle preview                                              |
+| Alt+u    | Update highlighted issue                                    |
 | Ctrl+o   | Open highlighted entry (or selected entries) in the browser |
 
 It is important to note that:
@@ -107,6 +108,7 @@ This scrips also requires:
 And optionally:
 
 * xdg-open (or open on Darwin) to open issues in the web browser
+* mktemp to update issues
 
 ## License
 This project is distributed under the [3-Clause BSD

@@ -1,7 +1,7 @@
 #!/bin/bash
 # Copyright 2023      Red Hat, Inc
 # Requires: curl, jq, column (from util-linux), fzf
-# Optional requirements: xdg-open (open on Darwin)
+# Optional requirements: xdg-open (open on Darwin), mktemp
 set -u
 
 # We are going to be calling ourselves, so we need to know where we are.
@@ -92,6 +92,20 @@ build_cache () {
         "$JIRAAPIURL/search" > "$CACHE"
 }
 
+# The list_* functions all add a surprising string as the last column:
+# - EPIC for list_epics;
+# - STORY for list_stories;
+# - the key of the parent epic for list_stories_for_epic.
+#
+# When we update a field (using Alt+u), we need to reload the current view so
+# that the user can see the new value of the field they have just updated. This
+# means we need to figure out what view we are currently displaying. If the
+# highlighted entry is an epic, then it's pretty straightfoward; but if the
+# highlighted entry is a story, we might be displaying *all* stories or just
+# the children of a specific epic, and we cannot know which one it is.
+#
+# To solve this issue, we add this info in the last column. fzf will hide it
+# thanks to the --with-nth option.
 list_epics () {
     jq -r \
         '.issues[]
@@ -99,7 +113,8 @@ list_epics () {
         | [.key,
            .fields.status.name,
            .fields.fixVersions[0].name // "----------",
-           .fields.summary]
+           .fields.summary,
+           "EPIC"]
         | @tsv
     ' "$CACHE" \
     | column -s $'\t' -t
@@ -112,7 +127,8 @@ list_stories () {
         | [.key,
            .fields.status.name,
            .fields[$planning][0].value // "------",
-           .fields.summary]
+           .fields.summary,
+           "STORY"]
         | @tsv
     ' "$CACHE" \
     | column -s $'\t' -t
@@ -126,7 +142,8 @@ list_stories_for_epic () {
         | [.key,
            .fields.status.name,
            .fields[$planning][0].value // "------",
-           .fields.summary]
+           .fields.summary,
+           $epickey]
         | @tsv
     ' "$CACHE" \
     | column -s $'\t' -t
@@ -171,6 +188,164 @@ preview_story () {
     | column -s $'\t' -t
 }
 
+# Regarding the update_<FIELD> functions:
+# - they all start by making a call to the API to update the value of the field
+#   we are interested in;
+# - they then update the cache directly by editing it rather than rebuilding it
+#   through another call to the API, so that this operation is quicker. The
+#   written cache may not be exactly the same as it would have been had a call
+#   to the API been made, but as long as all the fields we're accessing are
+#   available, it's good enough for us.
+update_tshirt_size () {
+    local data
+    data=$(jq --null-input \
+        --arg cftshirt "$CF_TSHIRT" \
+        --arg tshirtsize "$2" \
+        '{"fields":{($cftshirt):{"value":$tshirtsize}}}')
+    curl "${CURL_OPTS[@]}" \
+        -X PUT \
+        --data "$data" \
+        "$JIRAAPIURL/issue/$1" && \
+    tmpfile=$(mktemp) && \
+    jq "${JQ_ARGS[@]}" --compact-output \
+        --arg epickey "$1" --arg tshirtsize "$2" \
+        '(.issues[] | select(.key==$epickey))
+         .fields[$tshirt].value |= $tshirtsize' \
+        "$CACHE" > "$tmpfile" && \
+    mv "$tmpfile" "$CACHE"
+}
+
+update_fixversions () {
+    local data
+    data=$(jq --null-input \
+        --arg version "$2" \
+        '{"fields":{"fixVersions":[{"name":$version}]}}')
+    curl "${CURL_OPTS[@]}" \
+        -X PUT \
+        --data "$data" \
+        "$JIRAAPIURL/issue/$1" && \
+    tmpfile=$(mktemp) && \
+    jq "${JQ_ARGS[@]}" --compact-output \
+        --arg epickey "$1" --arg version "$2" \
+        '(.issues[] | select(.key==$epickey))
+         .fields.fixVersions[0].name |= $version' \
+        "$CACHE" > "$tmpfile" && \
+    mv "$tmpfile" "$CACHE"
+}
+
+update_planning () {
+    local data
+    data=$(jq --null-input \
+        --arg cfplanning "$CF_PLANNING" \
+        --arg value "$2" \
+        '{"fields":{($cfplanning):[{"value":$value}]}}')
+    curl "${CURL_OPTS[@]}" \
+        -X PUT \
+        --data "$data" \
+        "$JIRAAPIURL/issue/$1" && \
+    tmpfile=$(mktemp) && \
+    jq "${JQ_ARGS[@]}" --compact-output \
+        --arg epickey "$1" --arg value "$2" \
+        '(.issues[] | select(.key==$epickey))
+         .fields[$planning] |= [{"value": $value}]' \
+        "$CACHE" > "$tmpfile" && \
+    mv "$tmpfile" "$CACHE"
+}
+
+update_storypoints () {
+    local data
+    data=$(jq --null-input \
+        --arg cfstorypoints "$CF_STORYPOINTS" \
+        --arg points "$2" \
+        '{"fields":{($cfstorypoints):$points|tonumber}}')
+    curl "${CURL_OPTS[@]}" \
+        -X PUT \
+        --data "$data" \
+        "$JIRAAPIURL/issue/$1" && \
+    tmpfile=$(mktemp) && \
+    jq "${JQ_ARGS[@]}" --compact-output \
+        --arg epickey "$1" --arg points "$2" \
+        '(.issues[] | select(.key==$epickey))
+         .fields[$storypoints] |= $points' \
+        "$CACHE" > "$tmpfile" && \
+    mv "$tmpfile" "$CACHE"
+
+}
+
+update_issue () {
+    # Figure out what fields might be updated depending on the type of issue we
+    # are trying to update.
+    kind=$(jq -r --arg key "$1" \
+            '.issues[]
+            | select(.key==$key)
+            |.fields.issuetype.name
+            ' "$CACHE")
+    case "$kind" in
+    "Epic") options="T-shirt\nVersion" ;;
+    "Story") options="Planning\nStoryPoints" ;;
+    esac
+
+    # Ask the user what field they would like to update
+    what=$(echo -e "$options" |
+        fzf-tmux -p 50%,50% \
+            --prompt "[$1] What do you want to edit? > ")
+    test -z "$what" && return
+
+    # Present the user with valid values for the field they are trying to
+    # update.
+    case "$what" in
+    "T-shirt")
+        options="S\nM\nL\nXL"
+        updatefn=update_tshirt_size
+        ;;
+    "Version")
+        # TODO: We could probably generate a list of relevant versions rather
+        # than making a call to the API.
+        options=$(curl "${CURL_OPTS[@]}"  \
+           -X GET \
+            "$JIRAAPIURL/project/OSP/versions" \
+            | jq -r .[].name | grep "rhos-[0-9]" | sort -rV)
+        updatefn=update_fixversions
+        ;;
+    "Planning")
+        # TODO: We could probably generate a list of relevant planning targets
+        # rather than making a call to the API.
+        options=$(curl "${CURL_OPTS[@]}"  \
+           -X GET \
+            "$JIRAAPIURL/issue/$1/editmeta" \
+            |jq "${JQ_ARGS[@]}" -r '.fields[$planning].allowedValues[].value' \
+            |sort -rV)
+        updatefn=update_planning
+        ;;
+    "StoryPoints")
+        options="1\n2\n3\n5\n8\n13\n21"
+        updatefn=update_storypoints
+        ;;
+    esac
+    v=$(echo -e "$options" \
+        | fzf-tmux -p 50%,50% --prompt "[$1] New value for '$what' > ")
+
+    # Finally, update the field!
+    test -n "$v" && "$updatefn" "$1" "$v"
+}
+
+# We need to export this function so that it is available to fzf
+reload_view () {
+    # This function is meant to be called through "reload()" in an fzf binding.
+    # It figures out which view is currently being displayed, and reloads it.
+    # Arguments:
+    # $1: Path to fzf-jira
+    # $2: EPIC to reload the epics view
+    #     STORY to reload the stories view
+    #     XXX-123 to reload the "children of XXX-123" view
+    case "$2" in
+        EPIC) bash "$1" list-epics;;
+        STORY) bash "$1" list-stories;;
+        *) bash "$1" list-stories-for-epic "$2";;
+    esac
+}
+export -f reload_view
+
 fzf_epics () {
     bash "$FZF_JIRA" list-epics \
     | fzf \
@@ -178,6 +353,7 @@ fzf_epics () {
         --header-lines 1 \
         --preview "bash $FZF_JIRA preview-epic {1}" \
         --preview-window bottom +s \
+        --with-nth 1..-2 \
         --bind "ctrl-o:execute-silent(bash $FZF_JIRA open-issues {+1})" \
         --bind "alt-p:toggle-preview" \
         --bind "alt-e:reload(bash $FZF_JIRA list-epics)" \
@@ -194,7 +370,9 @@ fzf_epics () {
         --bind "alt-s:+change-preview(bash $FZF_JIRA preview-story {1})" \
         --bind "alt-s:+unbind(alt-s)+unbind(alt-c)" \
         --bind "alt-s:+clear-query" \
-        --bind "alt-s:+first"
+        --bind "alt-s:+first" \
+        --bind "alt-u:execute(bash $FZF_JIRA update-issue {1})" \
+        --bind "alt-u:+reload(reload_view $FZF_JIRA {-1})"
 }
 
 usage () {
@@ -206,7 +384,9 @@ usage () {
 }
 
 if [[ "$#" -gt "0" ]]; then
-    COMMONBINDINGS='ALT + toggle (p)review'
+    # Add "XXX" at the end since "--with-nth" affects headers passed using
+    # --header-lines.
+    COMMONBINDINGS='ALT + toggle (p)review | ALT + (u)pdate XXX'
     case "$1" in
         -h|--help)
             usage
@@ -240,6 +420,9 @@ if [[ "$#" -gt "0" ]]; then
             ;;
         preview-story)
             preview_story "$2"
+            ;;
+        update-issue)
+            update_issue "$2"
             ;;
         [Cc]eph|[Cc]inder|[Gg]lance|[Mm]anila|[Ss]wift)
             build_cache "$1"
