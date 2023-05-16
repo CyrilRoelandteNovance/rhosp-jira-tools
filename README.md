@@ -103,6 +103,7 @@ This scrips also requires:
 
 * column(1) from
 [util-linux](https://mirrors.edge.kernel.org/pub/linux/utils/util-linux/).
+* fold from coreutils
 * [fzf](https://github.com/junegunn/fzf)
 
 And optionally:

@@ -1,6 +1,6 @@
 #!/bin/bash
 # Copyright 2023      Red Hat, Inc
-# Requires: curl, jq, column (from util-linux), fzf
+# Requires: curl, jq, column (from util-linux), fzf, fold
 # Optional requirements: xdg-open (open on Darwin), mktemp
 set -u
 
@@ -71,6 +71,7 @@ build_cache () {
     local data='{
         "jql": "'${JQL}'",
         "fields": [
+            "description",
             "fixVersions",
             "summary",
             "key",
@@ -149,6 +150,17 @@ list_stories_for_epic () {
     | column -s $'\t' -t
 }
 
+_preview_print_description () {
+    echo "= Description =================================================================="
+    jq -r --arg issuekey "$1" \
+        '.issues[]
+        | select(.key == $issuekey)
+        | .fields.description // "No description provided"
+        ' "$CACHE" \
+    | fold -s
+    echo "= End of description ==========================================================="
+}
+
 preview_epic () {
     jq "${JQ_ARGS[@]}" -r --arg epickey "$1" \
         '.issues[]
@@ -166,6 +178,8 @@ preview_epic () {
         | map("\(.key)|\(.value|tostring)")
         | .[]' "$CACHE" \
     | column -s '|' -t
+    echo ""
+    _preview_print_description "$1"
 }
 
 preview_story () {
@@ -186,6 +200,8 @@ preview_story () {
         | map("\(.key)\t\(.value|tostring)")
         | .[]' "$CACHE" \
     | column -s $'\t' -t
+    echo ""
+    _preview_print_description "$1"
 }
 
 # Regarding the update_<FIELD> functions:
