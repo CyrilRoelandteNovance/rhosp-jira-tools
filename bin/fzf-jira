@@ -62,10 +62,10 @@ JQ_ARGS=(
 )
 
 build_cache () {
-    PROJECT=$1
-    WHITEBOARD="DFG:Storage Squad:$PROJECT"
+    WHITEBOARD=$1
+    WORKSTREAM=$2
     JQL="project in (OSP, RHOSPDOC)"
-    JQL="$JQL AND (Whiteboard ~ '$WHITEBOARD' OR Workstream='Storage; $PROJECT')"
+    JQL="$JQL AND (Whiteboard ~ '$WHITEBOARD' OR Workstream='$WORKSTREAM')"
     JQL="$JQL AND issuetype in ('Epic', 'Story')"
     JQL="$JQL ORDER by key DESC"
     local data='{
@@ -392,11 +392,18 @@ fzf_epics () {
 }
 
 usage () {
-    script=$(basename "$0")
-    echo "Usage:"
-    echo -e "\t$script PROJECT"
-    echo ""
-    echo "where PROJECT can be Ceph, Cinder, Glance, Manila, Swift"
+cat << EOF
+Usage: $(basename "$0") PROJECT
+
+where PROJECT can be:
+    - Ceph
+    - Cinder
+    - Glance
+    - Manila
+    - Neutron
+    - Nova
+    - Swift
+EOF
 }
 
 if [[ "$#" -gt "0" ]]; then
@@ -441,7 +448,15 @@ if [[ "$#" -gt "0" ]]; then
             update_issue "$2"
             ;;
         [Cc]eph|[Cc]inder|[Gg]lance|[Mm]anila|[Ss]wift)
-            build_cache "$1"
+            build_cache "DFG:Storage Squad:$1" "Storage; $1"
+            fzf_epics
+            ;;
+        [Nn]eutron)
+            build_cache "DFG:Networking; Squad:Neutron" "Networking; Neutron"
+            fzf_epics
+            ;;
+        [Nn]ova)
+            build_cache "DFG:Compute" "Compute"
             fzf_epics
             ;;
         *)

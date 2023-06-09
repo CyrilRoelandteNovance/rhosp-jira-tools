@@ -1,7 +1,7 @@
 # jira-osp
 
 A collection of scripts to automate common operations in Jira for the Red Hat
-OpenStack Storage team.
+OpenStack team.
 
 ## Installation
 Scripts can either be run from the bin/ directory or be installed on your
@@ -45,12 +45,13 @@ The following pieces of software are required for all scripts:
 ## Scripts
 ### add-missing-workstream
 Stories should have a "workstream" set. This script goes through all epics for
-a given project (Ceph, Cinder, Glance, Manila, Swift) and sets the appropriate
-workstream for their child stories.
+a given project (Ceph, Cinder, Glance, Manila, Neutron, Nova, Swift) and sets
+the appropriate workstream for their child stories.
 
 ### fzf-jira
 An interactive (but limited) interface for Jira. Upon startup, lists all epics
-for the project given as an argument (Ceph, Cinder, Glance, Manila, Swift).
+for the project given as an argument (Ceph, Cinder, Glance, Manila, Neutron,
+Nova,  Swift).
 Being familiar with [fzf](https://github.com/junegunn/fzf) will help using
 fzf-jira to its full potential.
 

@@ -9,19 +9,27 @@
 set -u
 
 usage () {
-    script=$(basename "$0")
-    echo "Usage:"
-    echo -e "\t$script [-n|--dry-run] PROJECT"
-    echo ""
-    echo "where PROJECT can be Ceph, Cinder, Glance, Manila, Swift"
-    echo ""
-    echo "A Jira token must be available in \$XDG_CONFIG_HOME/jira-osp/config:"
-    echo ""
-    echo -e "\t\$ cat \$XDG_CONFIG_HOME/jira-osp/config"
-    echo -e "\ttoken=secret-token"
+cat << EOF
+Usage: $(basename "$0") [-n|--dry-run] PROJECT
+
+where PROJECT can be:
+    - Ceph
+    - Cinder
+    - Glance
+    - Manila
+    - Neutron
+    - Nova
+    - Swift
+
+A Jira token must be available in \$XDG_CONFIG_HOME/jira-osp/config:
+
+    $ cat \$XDG_CONFIG_HOME/jira-osp/config
+    token=secret-token"
+EOF
 }
 
 dryrun=false
+[[ "$#" -eq "0" ]] && usage && exit 1
 while [[ $# -gt 0 ]]; do
     case "$1" in
         -h|--help)
@@ -37,9 +45,25 @@ while [[ $# -gt 0 ]]; do
             usage
             exit 1
             ;;
-        *)
-            PROJECT=$1
+        [Cc]eph|[Cc]inder|[Gg]lance|[Mm]anila|[Ss]wift)
+            WHITEBOARD="DFG:Storage Squad:$1"
+            WORKSTREAM="Storage; $1"
             shift
+            ;;
+        [Nn]eutron)
+            WHITEBOARD="DFG:Networking; Squad:Neutron"
+            WORKSTREAM="Networking; Neutron"
+            shift
+            ;;
+        [Nn]ova)
+            WHITEBOARD="DFG:Compute"
+            WORKSTREAM="Compute"
+            shift
+            ;;
+        *)
+            echo "Invalid argument $1"
+            usage
+            exit 1
             ;;
     esac
 done
@@ -63,11 +87,6 @@ if test -z "$JIRATOKEN"; then
     echo -e "token=secret-token"
     exit 1
 fi
-
-# For backwards-compatibility, Glance is the default project.
-PROJECT=${PROJECT:-Glance}
-WHITEBOARD="DFG:Storage Squad:$PROJECT"
-WORKSTREAM="Storage; $PROJECT"
 
 list_epics () {
     # Return the keys of all the Epics for the whiteboard/workstream we are
