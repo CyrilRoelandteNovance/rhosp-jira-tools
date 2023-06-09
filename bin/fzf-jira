@@ -64,6 +64,7 @@ JQ_ARGS=(
 build_cache () {
     WHITEBOARD=$1
     WORKSTREAM=$2
+    echo "Building cache for $WHITEBOARD, please wait..."
     JQL="project in (OSP, RHOSPDOC)"
     JQL="$JQL AND (Whiteboard ~ '$WHITEBOARD' OR Workstream='$WORKSTREAM')"
     JQL="$JQL AND issuetype in ('Epic', 'Story')"
