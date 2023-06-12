@@ -404,6 +404,7 @@ where PROJECT can be:
     - Neutron
     - Nova
     - Swift
+    - Vans
 EOF
 }
 
@@ -458,6 +459,10 @@ if [[ "$#" -gt "0" ]]; then
             ;;
         [Nn]ova)
             build_cache "DFG:Compute" "Compute"
+            fzf_epics
+            ;;
+        [Vv][Aa][Nn][Ss])
+            build_cache "DFG:Networking Squad:VANS" "Networking; VANS"
             fzf_epics
             ;;
         *)

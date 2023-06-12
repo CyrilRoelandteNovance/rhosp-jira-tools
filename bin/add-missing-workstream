@@ -20,6 +20,7 @@ where PROJECT can be:
     - Neutron
     - Nova
     - Swift
+    - Vans
 
 A Jira token must be available in \$XDG_CONFIG_HOME/jira-osp/config:
 
@@ -58,6 +59,11 @@ while [[ $# -gt 0 ]]; do
         [Nn]ova)
             WHITEBOARD="DFG:Compute"
             WORKSTREAM="Compute"
+            shift
+            ;;
+        [Vv][Aa][Nn][Ss])
+            WHITEBOARD="DFG:Networking Squad:VANS"
+            WORKSTREAM="Networking; VANS"
             shift
             ;;
         *)
