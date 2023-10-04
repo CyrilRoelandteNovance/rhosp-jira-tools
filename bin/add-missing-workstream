@@ -134,21 +134,20 @@ list_stories() {
         "$JIRAURL/search" | jq -r .issues[].key
 }
 
-add_worsktream_to_story () {
-    # Edit the story whose key is $1 by setting its workstream to $WORKSTREAM.
-    local storykey=$1
-    local d;
-    d=$(printf '{
-        "fields" : {
-            "customfield_12319275": [{"value" : "%s"}]
-        }
-    }', "$WORKSTREAM")
+add_workstream_to_issue () {
+    # Edit the issue whose key is $1 by adding $2 to its workstreams.
+    local issuekey=$1
+    local workstream=$2
+    data=$(jq --null-input \
+        --arg workstream_field "customfield_12319275" \
+        --arg workstream "$workstream" \
+        '{"update":{($workstream_field):[{"add":{"value":$workstream}}]}}')
     curl -s \
         -X PUT \
         -H "Authorization: Bearer $JIRATOKEN" \
         -H "Content-Type: application/json" \
-        --data "$d" \
-        "$JIRAURL/issue/$storykey/"
+        --data "$data" \
+        "$JIRAURL/issue/$issuekey/"
 }
 
 for epickey in $(list_epics); do
@@ -159,7 +158,7 @@ for epickey in $(list_epics); do
             echo "Dry run: not actually adding a workstream to $storykey"
         else
             echo "Adding a workstream to $storykey"
-            add_worsktream_to_story "$storykey"
+            add_workstream_to_issue "$storykey" "$WORKSTREAM"
         fi
     done
 done
