@@ -48,6 +48,10 @@ Stories should have a "workstream" set. This script goes through all epics for
 a given project (Ceph, Cinder, Glance, Manila, Neutron, Nova, Swift, Vans) and
 sets the appropriate workstream for their child stories.
 
+It also adds the appropriate workstream to issues that have a "whiteboard"
+value set, but no workstream. This is often the case with issues created
+automatically from Bugzilla bugs.
+
 ### fzf-jira
 An interactive (but limited) interface for Jira. Upon startup, lists all epics
 for the project given as an argument (Ceph, Cinder, Glance, Manila, Neutron,

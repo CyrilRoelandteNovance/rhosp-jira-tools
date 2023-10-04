@@ -26,6 +26,12 @@ A Jira token must be available in \$XDG_CONFIG_HOME/jira-osp/config:
 
     $ cat \$XDG_CONFIG_HOME/jira-osp/config
     token=secret-token"
+
+This will append the appropriate workstream to issues:
+
+- that have a whiteboard set, but an empty workstream;
+- that are children stories of an epic with a workstream already set, but have
+  no workstream set.
 EOF
 }
 
@@ -97,8 +103,10 @@ fi
 list_epics () {
     # Return the keys of all the Epics for the whiteboard/workstream we are
     # interested in that have not been closed.
+    local whiteboard="$1"
+    local workstream="$2"
     local jql="project=OSP"
-    jql="$jql AND (Whiteboard ~ '$WHITEBOARD' OR Workstream = '$WORKSTREAM')"
+    jql="$jql AND (Whiteboard ~ '$whiteboard' OR Workstream = '$workstream')"
     jql="$jql AND issuetype='Epic'"
     jql="$jql AND status!=Closed"
     jql="$jql ORDER by key"
@@ -115,8 +123,8 @@ list_epics () {
         "$JIRAURL/search" | jq -r .issues[].key
 }
 
-list_stories() {
-    # Return the keys of the stories whose parent is $1, and that have no
+list_children_without_workstream() {
+    # Return the keys of the issues whose parent is $1, and that have no
     # workstream set.
     local epickey=$1
     local jql="'Epic Link' = '$epickey'"
@@ -130,6 +138,27 @@ list_stories() {
         -X POST \
         -H "Authorization: Bearer $JIRATOKEN" \
         -H "Content-Type: application/json" \
+        --data "$d" \
+        "$JIRAURL/search" | jq -r .issues[].key
+}
+
+list_issues_whiteboard_no_workstream () {
+    # Return the keys of the issues that have a whiteboard set, but an empty
+    # workstream.
+    local whiteboard="$1"
+    local jql="project=OSP"
+    jql="$jql AND Workstream = EMPTY AND Whiteboard ~ '$whiteboard'"
+    jql="$jql AND status!=Closed"
+    jql="$jql ORDER by key"
+    local d='{
+        "jql": "'${jql}'",
+        "maxResults": 1000,
+        "fields": ["key"]
+    }'
+    curl -s  \
+       -X POST \
+       -H "Authorization: Bearer $JIRATOKEN" \
+       -H "Content-Type: application/json" \
         --data "$d" \
         "$JIRAURL/search" | jq -r .issues[].key
 }
@@ -150,15 +179,37 @@ add_workstream_to_issue () {
         "$JIRAURL/issue/$issuekey/"
 }
 
-for epickey in $(list_epics); do
-    echo "[+] Epic $epickey"
-    for storykey in $(list_stories "$epickey"); do
-        echo "$storykey is missing a workstream"
+add_workstream_to_issues_with_a_whiteboard () {
+    local whiteboard="$1"
+    local workstream="$2"
+    for issuekey in $(list_issues_whiteboard_no_workstream "$whiteboard"); do
+        echo "[+] Issue $issuekey has a whiteboard, but its workstream is empty"
         if "$dryrun"; then
-            echo "Dry run: not actually adding a workstream to $storykey"
+            echo "Dry run: not actually adding a workstream to $issuekey"
         else
             echo "Adding a workstream to $storykey"
-            add_workstream_to_issue "$storykey" "$WORKSTREAM"
+            add_workstream_to_issue "$storykey" "$workstream"
         fi
     done
-done
+}
+
+add_workstream_to_children_stories () {
+    local whiteboard="$1"
+    local workstream="$2"
+    for epickey in $(list_epics "$whiteboard" "$workstream"); do
+        echo "[+] Epic $epickey: checking its children..."
+        for storykey in $(list_children_without_workstream "$epickey"); do
+            echo "$storykey is missing a workstream"
+            if "$dryrun"; then
+                echo "Dry run: not actually adding a workstream to $storykey"
+            else
+                echo "Adding a workstream to $storykey"
+                add_worktream_to_issue "$storykey" "$workstream"
+            fi
+        done
+    done
+}
+
+# Let's go!
+add_workstream_to_issues_with_a_whiteboard "$WHITEBOARD" "$WORKSTREAM"
+add_workstream_to_children_stories "$WHITEBOARD" "$WORKSTREAM"
