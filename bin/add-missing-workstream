@@ -204,7 +204,7 @@ add_workstream_to_children_stories () {
                 echo "Dry run: not actually adding a workstream to $storykey"
             else
                 echo "Adding a workstream to $storykey"
-                add_worktream_to_issue "$storykey" "$workstream"
+                add_workstream_to_issue "$storykey" "$workstream"
             fi
         done
     done
