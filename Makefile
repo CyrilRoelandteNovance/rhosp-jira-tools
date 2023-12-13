@@ -1,5 +1,5 @@
 PREFIX ?= /usr/local
-scripts=bin/add-missing-workstream bin/fzf-jira
+scripts=bin/add-missing-workstream bin/fzf-jira bin/jira-linter
 
 install: $(scripts)
 	install -d $(PREFIX)/bin/

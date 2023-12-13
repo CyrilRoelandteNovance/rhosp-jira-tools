@@ -116,6 +116,12 @@ And optionally:
 * xdg-open (or open on Darwin) to open issues in the web browser
 * mktemp to update issues
 
+### jira-linter
+A linter for RHOSP issues. It can detect the following problems:
+
+* E-$issuetype-001: a required field is missing
+* W-$issuetype-001: an obsolote field is used
+
 ## License
 This project is distributed under the [3-Clause BSD
 License](https://opensource.org/licenses/BSD-3-Clause). See the LICENSE file.

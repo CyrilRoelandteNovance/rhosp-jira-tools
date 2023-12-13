@@ -1,0 +1,250 @@
+#!/bin/bash
+# Copyright 2023      Red Hat, Inc
+# Requires: curl, jq
+set -u
+
+XDG_CONFIG_HOME=${XDG_CONFIG_HOME:-$HOME/.config}
+XDG_CACHE_HOME=${XDG_CACHE_HOME:-$HOME/.cache}
+
+# Jira configuration
+JIRAURL=https://issues.redhat.com
+JIRAAPIURL=$JIRAURL/rest/api/2
+JIRAOSPCONFIG=$XDG_CONFIG_HOME/jira-osp/config
+if ! test -r "$JIRAOSPCONFIG"; then
+    echo "A Jira token must be available in \$XDG_CONFIG_HOME/jira-osp/config:"
+    echo ""
+    echo -e "\t\$ cat \$XDG_CONFIG_HOME/jira-osp/config"
+    echo -e "\ttoken=secret-token"
+    exit 1
+fi
+JIRATOKEN=$(awk 'BEGIN {FS="="} /^token=/ {print $2}' "$JIRAOSPCONFIG")
+if test -z "$JIRATOKEN"; then
+    echo "Could not find Jiratoken in $JIRAOSPCONFIG"
+    echo "$JIRAOSPCONFIG must contain the following line:"
+    echo -e "token=secret-token"
+    exit 1
+fi
+
+CF_PARENT=customfield_12311140
+CF_WHITEBOARD=customfield_12316843
+CF_WORKSTREAM=customfield_12319275
+
+# All the _get_<field> functions take a single argument: a JSON string
+# describing the issue, as returned by a call to $JIRAAPIURL/issue/$issue.
+_get_component () {
+    jq -r '.fields.components[0].name // ""' <<< "$1"
+}
+
+_get_epiclink () {
+    jq -r --arg epiclink "$CF_PARENT" '(.fields[$epiclink] // "")' <<< "$1"
+}
+
+_get_fixVersions () {
+    jq -r '.fields.fixVersions[0].name // ""' <<< "$1"
+}
+
+_get_issuetype () {
+    jq -r '.fields.issuetype.name' <<< "$1"
+}
+
+_get_priority () {
+    jq -r '.fields.priority.name // ""' <<< "$1"
+}
+
+_get_regression () {
+    jq -r '.fields.regression.name // ""' <<< "$1"
+}
+
+_get_severity () {
+    jq -r '.fields.severity.name // ""' <<< "$1"
+}
+
+_get_versions () {
+    jq -r '(.fields.versions // [{name: ""}]) | map(.name) | join(",")' \
+    <<< "$1"
+}
+
+_get_whiteboard () {
+    jq -r --arg whiteboard "$CF_WHITEBOARD" \
+        '.fields[$whiteboard] // ""' <<< "$1"
+}
+
+_get_workstream () {
+    jq -r --arg workstream "$CF_WORKSTREAM" \
+        '(.fields[$workstream] // [{value: ""}]) | map(.value) | join(",")' \
+        <<< "$1"
+}
+
+_e001_required_fields () {
+    issue=$1
+    json=$2
+    shift 2
+    required_fields=$1
+    for field in "${required_fields[@]}"; do
+        fn="_get_$field"
+        value=$("$fn" "$json")
+        if [[ -z "$value" ]]; then
+            echo "E-$issuetype-001: $issue: Missing $field"
+        fi
+    done
+}
+
+_w001_obsolete_fields () {
+    issue=$1
+    json=$2
+    obsolete_fields=(
+        whiteboard
+    )
+    for field in "${obsolete_fields[@]}"; do
+        fn="_get_$field"
+        value=$("$fn" "$json")
+        if [[ -n "$value" ]]; then
+            echo "W-$issuetype-001: $issue: Obsolete $field used"
+        fi
+    done
+}
+
+_lint_bug () {
+    issue="$1"
+    json="$2"
+    required_fields=(
+        priority severity regression versions component fixVersions
+        workstream
+    )
+    # Non-required fields:
+    #   - Docs/Dev/QE/PM Approval
+    #   - Fixed in Build
+    _e001_required_fields "$issue" "$json"  "${required_fields[@]}"
+}
+
+_lint_epic () {
+    issue="$1"
+    json="$2"
+    required_fields=(
+        priority component fixVersions workstream
+    )
+    # Non-required fields:
+    #   - Docs/Dev/QE/PM Approval
+    #   - Parent Link
+    #   - Planning target?
+    #   - Fixed in Build
+    _e001_required_fields "$issue" "$json"  "${required_fields[@]}"
+    _w001_obsolete_fields "$issue" "$json"
+}
+
+_lint_feature () {
+    issue="$1"
+    json="$2"
+    required_fields=(
+        workstream
+    )
+    _e001_required_fields "$issue" "$json"  "${required_fields[@]}"
+    _w001_obsolete_fields "$issue" "$json"
+}
+
+_lint_risk () {
+    issue="$1"
+    json="$2"
+    required_fields=(
+        workstream
+    )
+    _e001_required_fields "$issue" "$json"  "${required_fields[@]}"
+    _w001_obsolete_fields "$issue" "$json"
+}
+
+_lint_spike () {
+    issue="$1"
+    json="$2"
+    required_fields=(
+        epiclink workstream
+    )
+    # Non-required fields:
+    #   - Planning target
+    _e001_required_fields "$issue" "$json"  "${required_fields[@]}"
+    _w001_obsolete_fields "$issue" "$json"
+}
+
+_lint_story () {
+    issue="$1"
+    json="$2"
+    required_fields=(
+        workstream epiclink
+    )
+    # Non-required fields:
+    #   - Docs/Dev/QE/PM Approval
+    #   - Planning target?
+    _e001_required_fields "$issue" "$json"  "${required_fields[@]}"
+    _w001_obsolete_fields "$issue" "$json"
+}
+
+_lint_sub-task () {
+    issue="$1"
+    json="$2"
+    required_fields=(
+        workstream
+    )
+    _e001_required_fields "$issue" "$json"  "${required_fields[@]}"
+    _w001_obsolete_fields "$issue" "$json"
+}
+
+_lint_task () {
+    issue="$1"
+    json="$2"
+    required_fields=(
+        workstream
+    )
+    # Non-required fields:
+    #   - Planning target?
+    _e001_required_fields "$issue" "$json"  "${required_fields[@]}"
+    _w001_obsolete_fields "$issue" "$json"
+}
+
+usage () {
+cat << EOF
+Usage: $(basename "$0") OSPRH-123 [OSPRH-456...]
+
+The rules are defined at https://docs.engineering.redhat.com/display/OSP/OSPRH+Jira+Projects+Standards#OSPRHJiraProjectsStandards-Fieldspurpose
+
+The following errors are defined (with \$type being one of Bug/Epic/Story):
+- E-\$type-001: a required field is missing
+- W-\$type-001: an obsolete field is used
+EOF
+}
+
+lint_issue () {
+    issue=$1
+    json=$(curl -s  \
+       -X GET \
+       -H "Authorization: Bearer $JIRATOKEN" \
+       -H "Content-Type: application/json" \
+        "$JIRAAPIURL/issue/$issue/")
+    issuetype=$(_get_issuetype "$json")
+    if [[ -z "$issuetype" ]]; then
+        echo "Failed to get issue type for $issue"
+        exit 1
+    fi
+    lower=$(echo "$issuetype" | tr "[:upper:]" "[:lower:]")
+    "_lint_$lower" "$issue" "$json"
+}
+
+main () {
+    if [[ "$#" -eq "0" ]]; then
+        usage
+        exit 1
+    fi
+
+    while [[ "$#" -gt "0" ]]; do
+        case "$1" in
+            -h|--help)
+                usage
+                exit 0
+                ;;
+            *)
+                lint_issue "$1"
+                shift
+                ;;
+        esac
+    done
+}
+
+main "$@"
