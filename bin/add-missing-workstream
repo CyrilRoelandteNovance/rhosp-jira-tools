@@ -105,7 +105,7 @@ list_epics () {
     # interested in that have not been closed.
     local whiteboard="$1"
     local workstream="$2"
-    local jql="project=OSP"
+    local jql="project=OSPRH"
     jql="$jql AND (Whiteboard ~ '$whiteboard' OR Workstream = '$workstream')"
     jql="$jql AND issuetype='Epic'"
     jql="$jql AND status!=Closed"
@@ -128,6 +128,7 @@ list_children_without_workstream() {
     # workstream set.
     local epickey=$1
     local jql="'Epic Link' = '$epickey'"
+    jql="$jql AND project = OSPRH"
     jql="$jql AND cf[12319275] is empty"  # cf[12319275] == "workstream" field
     jql="$jql ORDER by key"
     local d='{
@@ -146,7 +147,7 @@ list_issues_whiteboard_no_workstream () {
     # Return the keys of the issues that have a whiteboard set, but an empty
     # workstream.
     local whiteboard="$1"
-    local jql="project=OSP"
+    local jql="project=OSPRH"
     jql="$jql AND Workstream = EMPTY AND Whiteboard ~ '$whiteboard'"
     jql="$jql AND status!=Closed"
     jql="$jql ORDER by key"
