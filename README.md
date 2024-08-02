@@ -116,6 +116,16 @@ And optionally:
 * xdg-open (or open on Darwin) to open issues in the web browser
 * mktemp to update issues
 
+### jira
+A tool to edit Jira issues from the command line. It works well with any custom
+field defined in the Jira installation. This tool may be used interactively,
+but is mostly meant to be used in scripts.
+
+Example usage:
+
+    $ jira edit --set-Story-Points 8 ABC-1337
+
+
 ### jira-linter
 A linter for RHOSP issues. It can detect the following problems:
 

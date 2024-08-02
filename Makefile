@@ -14,3 +14,4 @@ uninstall:
 
 check:
 	tests/test-add-missing-workstream.sh
+	tests/test-jira.sh

@@ -1,0 +1,251 @@
+#!/bin/bash
+
+XDG_CONFIG_HOME=${XDG_CONFIG_HOME:-~/.config}
+
+jira_get_token () {
+    JIRAOSPCONFIG=$XDG_CONFIG_HOME/jira-osp/config
+    if ! test -r "$JIRAOSPCONFIG"; then
+        echo "A Jira token must be available in \$XDG_CONFIG_HOME/jira-osp/config:"
+        echo ""
+        echo -e "\t\$ cat \$XDG_CONFIG_HOME/jira-osp/config"
+        echo -e "\ttoken=secret-token"
+        exit 1
+    fi
+    JIRATOKEN=$(awk 'BEGIN {FS="="} /^token=/ {print $2}' "$JIRAOSPCONFIG")
+    if test -z "$JIRATOKEN"; then
+        echo "Could not find Jiratoken in $JIRAOSPCONFIG"
+        echo "$JIRAOSPCONFIG must contain the following line:"
+        echo -e "token=secret-token"
+        exit 1
+    fi
+    echo "$JIRATOKEN"
+}
+
+usage () {
+cat << EOF
+Usage: $(basename "$0") edit (add|set|remove)-FIELD ISSUEID
+
+FIELD can be:
+    - status
+    - link
+    - one of the custom fields available on your Jira installation
+
+A Jira token must be available in \$XDG_CONFIG_HOME/jira-osp/config:
+
+    $ cat \$XDG_CONFIG_HOME/jira-osp/config
+    token=secret-token"
+EOF
+
+exit "$1"
+}
+
+
+_add_remote_link() {
+    # Add a link to Jira issue with ID "$1". The URL is "$2" and the
+    # description is "$3".
+    issue=$1
+    url=$2
+    desc=$3
+
+    data=$(jq --null-input \
+        --arg url "$url" --arg desc "$desc" \
+        '{"object":{"url":$url,"title":$desc}}')
+    JIRATOKEN=$(jira_get_token)
+    JIRAAPIURL=https://issues.redhat.com/rest/api/2
+    curl -s  \
+       -X POST \
+       -H "Authorization: Bearer $JIRATOKEN" \
+       -H "Content-Type: application/json" \
+        --data "$data" \
+        "$JIRAAPIURL/issue/$issue/remotelink"
+}
+
+_set_status () {
+    issue=$1
+    new_status=$2
+    JIRATOKEN=$(jira_get_token)
+    JIRAAPIURL=https://issues.redhat.com/rest/api/2
+    CURL_OPTS=(-s
+           -H "Authorization: Bearer $JIRATOKEN"
+           -H "Content-Type: application/json"
+    )
+
+    # TODO https://stackoverflow.com/questions/73789285/how-to-update-the-status-on-a-jira-issue-vis-jira-rest-api
+    new_status_id=$(curl "${CURL_OPTS[@]}" \
+       -X GET \
+        "$JIRAAPIURL/issue/$issue/transitions" \
+        | jq --arg s "$new_status" -r '.transitions[] | select(.name==$s).id')
+       # | jq -r '.transitions[] | [.id, .name] | join(",")'
+    data=$(jq --null-input --arg id "$new_status_id" \
+            '{"transition": {"id": $id}}')
+    curl "${CURL_OPTS[@]}" \
+        -X POST \
+        --data "$data" \
+        "$JIRAAPIURL/issue/$issue/transitions"
+}
+
+edit_issue () {
+    CUSTOM_FIELDS_FILE=/tmp/jira-custom-fields
+    if [[ ! -f "$CUSTOM_FIELDS_FILE" ]]; then
+        fields > "$CUSTOM_FIELDS_FILE"
+    fi
+    update_json=$(jq --null-input '{"update":{}}')
+    declare -A custom_fields
+    declare -A custom_schemas
+    declare -A add_remote_links
+    new_status=''
+    # An example: the workstream field is actually defined like this:
+    # customfield_12319275,Workstream,com.atlassian.jira.plugin.system.customfieldtypes:multiselect
+    while IFS=',' read -r id name schema; do
+        custom_fields[$name]=$id
+        custom_schemas[$name]=$schema
+    done < "$CUSTOM_FIELDS_FILE"
+    while [[ $# -gt 0 ]]; do
+        case $1 in
+        --add-link)
+            add_remote_links[$2]=$3
+            shift 2;
+            ;;
+        --set-status)
+            new_status="$2"
+            shift;
+            ;;
+        --add-*|--set-*|--remove-*)
+            op=$(cut -d '-' -f 3 <<< "$1")
+            field=$(cut -d '-' -f 4- <<< "$1")
+            value=$2
+            if [[ -n "${custom_fields[$field]}" ]]; then
+                schema="${custom_schemas[$field]}"
+                field="${custom_fields[$field]}"
+                case "$schema" in
+                    # For instance: Story Points
+                    com.atlassian.jira.plugin.system.customfieldtypes:float)
+                    if [[ "$op" == "add" || "$op" == "remove" ]]; then
+                        echo "Field $field only supports the 'set' operation."
+                        exit 1
+                    fi
+                    update_json=$(echo "$update_json" | \
+                        jq --arg field "$field" --arg op "$op" --arg value "$value" \
+                            '.update[$field] |= . + [{($op): ($value|tonumber)}]')
+                    ;;
+                    # For instance: {Dev,Docs,PM,QE}-Approval
+                    com.atlassian.jira.plugin.system.customfieldtypes:select)
+                    if [[ "$op" == "add" || "$op" == "remove" ]]; then
+                        echo "Field $field only supports the 'set' operation."
+                        exit 1
+                    fi
+                    update_json=$(echo "$update_json" | \
+                        jq --arg field "$field" --arg op "$op" --arg value "$value" \
+                            '.update[$field] |= . + [{($op): {"value": $value}}]')
+                    ;;
+                    # For instance: Workstream
+                    com.atlassian.jira.plugin.system.customfieldtypes:multiselect)
+                    update_json=$(echo "$update_json" | \
+                        jq --arg field "$field" --arg op "$op" --arg value "$value" \
+                            '.update[$field] |= . + [{($op): [{"value": $value}]}]')
+                            #'.update[$field] |= . + [{($op): {"id": "29470"}}]')
+                    ;;
+                    # For instance: Fixed-In-Version
+                    com.atlassian.jira.plugin.system.customfieldtypes:textfield)
+                    update_json=$(echo "$update_json" | \
+                        jq --arg field "$field" --arg op "$op" --arg value "$value" \
+                            '.update[$field] |= . + [{($op): $value}]')
+                    ;;
+                    *)
+                        echo "Unexpected schema $schema, aborting"
+                        exit 1
+                        ;;
+                esac
+            else  # This is not a custom field
+                case "$field" in
+                    components|priority)
+                    update_json=$(echo "$update_json" | \
+                        jq --arg field "$field" --arg op "$op" --arg value "$value" \
+                            '.update[$field] |= . + [{($op): {"name": $value}}]')
+                        ;;
+                    *)
+                        echo "Unexpected field name $field, aborting"
+                        exit 1
+                        ;;
+                esac
+            fi
+            shift 2
+            ;;
+        *)
+            issue=$1
+            shift;
+            ;;
+        esac
+    done
+
+    # Process links to be added, one by one.
+    for url in "${!add_remote_links[@]}"
+    do
+        _add_remote_link "$issue" "$url" "${add_remote_links[$url]}"
+    done
+
+    if [[ -n "$new_status" ]]; then
+        _set_status "$issue" "$new_status"
+    fi
+
+    # Let's decide whether we actually need to make a call to /issue/$issue.
+    # Maybe the user only wanted to use --add-link (which uses another
+    # endpoint) and did not have any other fields to update.
+    n_edits=$(echo "$update_json" | jq '.update | length')
+    if [[ "$n_edits" != 0 ]]; then
+        JIRATOKEN=$(jira_get_token)
+        JIRAAPIURL=https://issues.redhat.com/rest/api/2
+        CURL_OPTS=(-s
+               -H "Authorization: Bearer $JIRATOKEN"
+               -H "Content-Type: application/json"
+        )
+        curl "${CURL_OPTS[@]}" \
+            -X PUT \
+            --data "$update_json" \
+            "$JIRAAPIURL/issue/$issue"
+    fi
+}
+
+fields () {
+    # https://confluence.atlassian.com/jirakb/how-to-find-any-custom-field-s-ids-744522503.html
+    JIRATOKEN=$(jira_get_token)
+    JIRAAPIURL=https://issues.redhat.com/rest/api/2
+    CURL_OPTS=(-s
+           -H "Authorization: Bearer $JIRATOKEN"
+           -H "Content-Type: application/json"
+    )
+    curl "${CURL_OPTS[@]}" \
+        "$JIRAAPIURL/field" \
+        | jq -r '.[]
+            | select(.id | test("^customfield_"))
+            | .name |= gsub(" ";"-";"g")
+            | [.id, .name, .schema.custom]
+            | join(",")'
+}
+
+main() {
+    case "$1" in
+        fields)
+            # Used for debugging purposes
+            fields;
+            exit 0
+            ;;
+        edit)
+            shift
+            edit_issue "$@"
+            ;;
+        -h|--help)
+            usage 0
+            ;;
+        *)
+            echo "Unknown operation $1"
+            usage 1
+            ;;
+    esac
+    exit 0
+}
+
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]
+then
+    main "$@"
+fi
