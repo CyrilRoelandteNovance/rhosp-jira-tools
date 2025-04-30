@@ -151,6 +151,12 @@ edit_issue () {
                         jq --arg field "$field" --arg op "$op" --arg value "$value" \
                             '.update[$field] |= . + [{($op): $value}]')
                     ;;
+                    # Epic-Link
+                    com.pyxis.greenhopper.jira:gh-epic-link)
+                    update_json=$(echo "$update_json" | \
+                        jq --arg field "$field" --arg op "$op" --arg value "$value" \
+                            '.update[$field] |= . + [{($op): $value}]')
+                    ;;
                     *)
                         echo "Unexpected schema $schema, aborting"
                         exit 1
