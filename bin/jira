@@ -23,7 +23,22 @@ jira_get_token () {
 
 usage () {
 cat << EOF
-Usage: $(basename "$0") edit (add|set|remove)-FIELD ISSUEID
+Usage:
+
+  Issues:
+    $ $(basename "$0") edit (add|set|remove)-FIELD ISSUEID
+
+  Sprints:
+    $ $(basename "$0") sprint create SPRINT-NAME BOARDID START END
+    $ $(basename "$0") sprint edit [OPTIONS] BOARDID
+      OPTIONS can be:
+        --start YYYY-MM-DD
+        --end YYYY-MM-DD
+        --name "some name"
+    $ $(basename "$0") sprint list BOARDID
+    Where:
+      - START and END are ISO8601 dates (YYYY-MM-DD)
+      - BOARDID is found on the board's URL (https://..RapidBoard.jspa?rapidView=BOARDID)
 
 FIELD can be:
     - status
@@ -215,6 +230,120 @@ edit_issue () {
     fi
 }
 
+_sprint_create () {
+    if [[ "$#" -ne "4" ]]; then
+        usage 1
+    fi
+    data=$(jq --null-input \
+        --arg name "$1" \
+        --arg boardid "$2" \
+        --arg startdate "$3" \
+        --arg enddate "$4" \
+        '{
+            "name": $name,
+            "originBoardId": $boardid,
+            "startDate": $startdate,
+            "endDate": $enddate
+        }'
+    )
+    echo "$data"
+    JIRATOKEN=$(jira_get_token)
+    JIRAAPIURL=https://issues.redhat.com/rest/agile/1.0
+    curl -s  \
+        -X POST \
+        -H "Authorization: Bearer $JIRATOKEN" \
+        -H "Content-Type: application/json" \
+        --data "$data" \
+        "$JIRAAPIURL/sprint"
+}
+
+_sprint_edit () {
+    if [[ "$#" -eq "0" ]]; then
+        usage 1
+    fi
+
+    update_json=$(jq --null-input '{}')
+    while [[ $# -gt 0 ]]; do
+        case $1 in
+        --end)
+            update_json=$(echo "$update_json" \
+                | jq --arg end "$2" '.endDate = $end')
+            shift 2
+            ;;
+        --name)
+            update_json=$(echo "$update_json" \
+                | jq --arg name "$2" '.name = $name')
+            shift 2
+            ;;
+        --start)
+            update_json=$(echo "$update_json" \
+                | jq --arg start "$2" '.startDate = $start')
+            shift 2
+            ;;
+        -*)
+            echo "Unknown option: $1"
+            usage 1
+            ;;
+        *)
+            if [[ "$#" -eq "1" ]]; then
+                # This is the last argument, so it probably is our sprint.
+                sprintid=$1
+                shift
+            else
+                echo "Invalid argument: $1"
+                usage 1
+            fi
+        esac
+    done
+
+    JIRATOKEN=$(jira_get_token)
+    JIRAAPIURL=https://issues.redhat.com/rest/agile/1.0
+    # Warning: we _do_ want a partial update here, using a POST request.
+    # A full update (using a PUT request) will wipe out all fields not present
+    # in the data passed to curl.
+    curl -s  \
+        -X POST \
+        -H "Authorization: Bearer $JIRATOKEN" \
+        -H "Content-Type: application/json" \
+        --data "$update_json" \
+        "$JIRAAPIURL/sprint/$sprintid"
+}
+
+_sprint_list() {
+    if [[ "$#" -ne "1" ]]; then
+        usage 1
+    fi
+    boardid=$1
+    JIRATOKEN=$(jira_get_token)
+    JIRAAPIURL=https://issues.redhat.com/rest/agile/1.0
+    curl -s \
+        -X GET \
+        -H "Authorization: Bearer $JIRATOKEN" \
+        -H "Content-Type: application/json" \
+        "$JIRAAPIURL/board/$boardid/sprint" \
+    | jq -r '.values[]
+        | [.id, .name, .startDate[:10], .endDate[:10]]
+        | @tsv' \
+    | column -o $'\t' -s $'\t' -t
+}
+
+sprint () {
+    if [[ "$#" -lt 1 ]]; then
+        usage 1
+    fi
+    case "$1" in
+    create|edit|list)
+        subcommand=$1
+        shift
+        "_sprint_$subcommand" "$@"
+        ;;
+    *)
+        usage 1
+        ;;
+    esac
+    return
+}
+
 fields () {
     # https://confluence.atlassian.com/jirakb/how-to-find-any-custom-field-s-ids-744522503.html
     JIRATOKEN=$(jira_get_token)
@@ -242,6 +371,10 @@ main() {
         edit)
             shift
             edit_issue "$@"
+            ;;
+        sprint)
+            shift
+            sprint "$@"
             ;;
         -h|--help)
             usage 0
